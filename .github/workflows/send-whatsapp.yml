@@ -42,17 +42,17 @@ jobs:
           fi
 
           ARCHIVO="archivos/semana-${SEMANA}/${{ github.event.inputs.archivo }}"
+          NOMBRE="${{ github.event.inputs.archivo }}"
+          CAPTION="${{ github.event.inputs.caption }}"
 
           echo "📁 Buscando: $ARCHIVO"
 
           if [ ! -f "$ARCHIVO" ]; then
             echo "❌ Archivo no encontrado: $ARCHIVO"
             echo "📂 Contenido disponible:"
-            find archivos/ -type f 2>/dev/null || echo "Carpeta archivos/ vacía o no existe"
+            find archivos/ -type f 2>/dev/null || echo "Carpeta archivos/ vacía"
             exit 1
           fi
-
-          BASE64=$(base64 -w 0 "$ARCHIVO")
 
           if [ "${{ github.event.inputs.tipo }}" = "imagen" ]; then
             ENDPOINT="${{ secrets.BOT_URL }}/send-image"
@@ -62,14 +62,24 @@ jobs:
 
           echo "📤 Enviando semana $SEMANA → $ENDPOINT"
 
+          # Usar python3 para generar el JSON con base64 (evita "Argument list too long")
+          python3 - <<PYEOF
+          import base64, json
+          with open("$ARCHIVO", "rb") as f:
+              b64 = base64.b64encode(f.read()).decode()
+          payload = {
+              "filename": "$NOMBRE",
+              "fileContent": b64,
+              "caption": "$CAPTION"
+          }
+          with open("payload.json", "w") as out:
+              json.dump(payload, out)
+          PYEOF
+
           RESPONSE=$(curl -s -o response.json -w "%{http_code}" \
             -X POST "$ENDPOINT" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"filename\": \"${{ github.event.inputs.archivo }}\",
-              \"fileContent\": \"$BASE64\",
-              \"caption\": \"${{ github.event.inputs.caption }}\"
-            }")
+            -d @payload.json)
 
           echo "HTTP Status: $RESPONSE"
           cat response.json
