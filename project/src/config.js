@@ -55,6 +55,7 @@ const config = {
   email: {
     subjectFilter: env('EMAIL_SUBJECT_FILTER', ''),
     fromFilter: env('EMAIL_FROM_FILTER', ''),
+    recipients: envList('EMAIL_RECIPIENTS'),
   },
 
   // --- WhatsApp ---

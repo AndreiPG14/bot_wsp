@@ -1,0 +1,82 @@
+name: Enviar archivo por WhatsApp y Correo
+
+on:
+  workflow_dispatch:
+    inputs:
+      semana:
+        description: "Número de semana (ej: 27). Dejar vacío para usar la semana actual."
+        required: false
+        type: string
+      archivo:
+        description: "Nombre del archivo dentro de la carpeta semana (ej: reporte.png)"
+        required: true
+        type: string
+      caption:
+        description: "Mensaje que acompaña el archivo"
+        required: false
+        default: "📊 Reporte actualizado"
+        type: string
+      tipo:
+        description: "Tipo de archivo"
+        required: true
+        default: "imagen"
+        type: choice
+        options:
+          - imagen
+          - pdf
+
+jobs:
+  enviar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Determinar semana y enviar
+        run: |
+          # Determinar número de semana
+          if [ -n "${{ github.event.inputs.semana }}" ]; then
+            SEMANA="${{ github.event.inputs.semana }}"
+          else
+            SEMANA=$(date +%V)
+          fi
+
+          ARCHIVO="archivos/semana-${SEMANA}/${{ github.event.inputs.archivo }}"
+
+          echo "📁 Buscando: $ARCHIVO"
+
+          if [ ! -f "$ARCHIVO" ]; then
+            echo "❌ Archivo no encontrado: $ARCHIVO"
+            echo "📂 Contenido disponible:"
+            find archivos/ -type f 2>/dev/null || echo "Carpeta archivos/ vacía o no existe"
+            exit 1
+          fi
+
+          BASE64=$(base64 -w 0 "$ARCHIVO")
+
+          if [ "${{ github.event.inputs.tipo }}" = "imagen" ]; then
+            ENDPOINT="${{ secrets.BOT_URL }}/send-image"
+          else
+            ENDPOINT="${{ secrets.BOT_URL }}/send"
+          fi
+
+          echo "📤 Enviando semana $SEMANA → $ENDPOINT"
+
+          RESPONSE=$(curl -s -o response.json -w "%{http_code}" \
+            -X POST "$ENDPOINT" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"filename\": \"${{ github.event.inputs.archivo }}\",
+              \"fileContent\": \"$BASE64\",
+              \"caption\": \"${{ github.event.inputs.caption }}\"
+            }")
+
+          echo "HTTP Status: $RESPONSE"
+          cat response.json
+
+          if [ "$RESPONSE" != "200" ]; then
+            echo "❌ Error al enviar"
+            exit 1
+          fi
+
+          echo "✅ Enviado exitosamente — WhatsApp + Correo"

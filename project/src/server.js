@@ -16,6 +16,7 @@ import config from './config.js';
 import logger from './logger.js';
 import { getConnectionStatus, listGroups } from './baileys.js';
 import { sendPdfToAll, sendImageToAll, IMAGE_MIMETYPES } from './sendWhatsapp.js';
+import { sendEmailToAll } from './mailer.js';
 import { generateSafeFilename, removeFile } from './utils.js';
 
 const app = express();
@@ -79,13 +80,16 @@ app.post('/send', async (req, res) => {
 
     logger.info({ filePath, sizeKB: Math.round(buffer.length / 1024) }, 'PDF guardado temporalmente');
 
-    // Enviar por WhatsApp a todos los destinatarios
-    const result = await sendPdfToAll(filePath, caption);
+    // Enviar por WhatsApp y correo en paralelo
+    const [wsp, mail] = await Promise.all([
+      sendPdfToAll(filePath, caption),
+      sendEmailToAll(filePath, caption, filename),
+    ]);
 
     res.json({
       success: true,
-      sent: result.sent,
-      failed: result.failed,
+      whatsapp: wsp,
+      email: mail,
       filename: safeName,
     });
 
@@ -135,9 +139,12 @@ app.post('/send-image', async (req, res) => {
     await fse.ensureDir(config.paths.attachments);
     await fse.writeFile(filePath, buffer);
 
-    const result = await sendImageToAll(filePath, mimetype, caption);
+    const [wsp, mail] = await Promise.all([
+      sendImageToAll(filePath, mimetype, caption),
+      sendEmailToAll(filePath, caption, filename),
+    ]);
 
-    res.json({ success: true, sent: result.sent, failed: result.failed, filename: safeName });
+    res.json({ success: true, whatsapp: wsp, email: mail, filename: safeName });
   } catch (err) {
     logger.error({ err: err.message }, 'Error al procesar imagen');
     res.status(500).json({ error: err.message });
