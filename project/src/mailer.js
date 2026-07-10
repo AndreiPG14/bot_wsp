@@ -40,7 +40,11 @@ export async function sendEmailToAll(filePath, caption, subject) {
   logger.info({ recipients, filename }, 'Enviando correo con adjunto');
 
   try {
-    await transporter.sendMail({
+    // Verificar conexión SMTP antes de enviar
+    await transporter.verify();
+    logger.info('✅ Conexión SMTP verificada');
+
+    const info = await transporter.sendMail({
       from: `"PowerBI Bot" <${config.imap.user}>`,
       to: recipients.join(','),
       subject: subject || caption || '📊 Reporte Power BI',
@@ -48,10 +52,10 @@ export async function sendEmailToAll(filePath, caption, subject) {
       attachments: [{ filename, content: fileBuffer }],
     });
 
-    logger.info({ recipients, filename }, '✅ Correo enviado exitosamente');
+    logger.info({ recipients, filename, messageId: info.messageId }, '✅ Correo enviado exitosamente');
     return { sent: recipients.length, failed: 0 };
   } catch (err) {
-    logger.error({ err: err.message }, '❌ Error al enviar correo');
+    logger.error({ err: err.message, stack: err.stack }, '❌ Error al enviar correo');
     return { sent: 0, failed: recipients.length };
   }
 }
