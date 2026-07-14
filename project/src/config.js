@@ -55,7 +55,6 @@ const config = {
   email: {
     subjectFilter: env('EMAIL_SUBJECT_FILTER', ''),
     fromFilter: env('EMAIL_FROM_FILTER', ''),
-    recipients: envList('EMAIL_RECIPIENTS'),
   },
 
   // --- WhatsApp ---
@@ -64,6 +63,7 @@ const config = {
     groups: envList('WHATSAPP_GROUPS'),
     caption: env('WHATSAPP_CAPTION', '📊 Reporte Power BI actualizado'),
   },
+
 
   // --- Reconexión ---
   reconnect: {
