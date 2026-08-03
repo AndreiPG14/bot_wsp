@@ -14,7 +14,7 @@ import path from 'path';
 import fse from 'fs-extra';
 import config from './config.js';
 import logger from './logger.js';
-import { getConnectionStatus, listGroups } from './baileys.js';
+import { getConnectionStatus, listGroups, getCurrentQr } from './baileys.js';
 import { sendPdfToAll, sendImageToAll, IMAGE_MIMETYPES } from './sendWhatsapp.js';
 import { generateSafeFilename, removeFile } from './utils.js';
 
@@ -22,6 +22,28 @@ const app = express();
 
 // Aumentar límite para recibir PDFs grandes en base64 (50MB)
 app.use(express.json({ limit: '50mb' }));
+
+// ─── GET /qr ─────────────────────────────────────────────────────────────────
+
+app.get('/qr', (req, res) => {
+  const qr = getCurrentQr();
+  const wa = getConnectionStatus();
+
+  if (wa.connected) {
+    return res.send('<h2>✅ WhatsApp ya está conectado</h2>');
+  }
+
+  if (!qr) {
+    return res.send('<h2>⏳ Esperando QR... recargá en unos segundos</h2><script>setTimeout(()=>location.reload(),3000)</script>');
+  }
+
+  res.send(`<!DOCTYPE html><html><body style="display:flex;flex-direction:column;align-items:center;font-family:sans-serif;padding:40px">
+    <h2>Escaneá con WhatsApp</h2>
+    <img src="${qr}" style="width:300px;height:300px"/>
+    <p>Abrí WhatsApp → Dispositivos vinculados → Vincular dispositivo</p>
+    <script>setTimeout(()=>location.reload(),30000)</script>
+  </body></html>`);
+});
 
 // ─── GET /health ─────────────────────────────────────────────────────────────
 

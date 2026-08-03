@@ -20,11 +20,18 @@ import {
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import fse from 'fs-extra';
-import qrcode from 'qrcode-terminal';
+import QRCode from 'qrcode';
 import pino from 'pino';
 import config from './config.js';
 import logger from './logger.js';
 import { sleep } from './utils.js';
+
+// QR actual como data URL (para servir en /qr)
+let currentQrDataUrl = null;
+
+export function getCurrentQr() {
+  return currentQrDataUrl;
+}
 
 // Logger silencioso para Baileys (evita flood de logs internos)
 const baileysLogger = pino({ level: 'silent' });
@@ -84,10 +91,10 @@ async function connect() {
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    // Mostrar QR cuando sea necesario
+    // Generar QR como imagen y servirlo en /qr
     if (qr) {
-      logger.info('⚡ Escanea el código QR con tu WhatsApp para iniciar sesión:');
-      qrcode.generate(qr, { small: true });
+      currentQrDataUrl = await QRCode.toDataURL(qr);
+      logger.info('⚡ QR listo — abrí /qr en el navegador para escanearlo');
     }
 
     if (connection === 'open') {
