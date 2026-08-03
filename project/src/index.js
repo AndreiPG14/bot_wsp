@@ -26,18 +26,19 @@ async function main() {
   await fse.ensureDir(config.paths.processed);
   logger.info('Carpetas verificadas/creadas');
 
-  // 2. Iniciar WhatsApp y esperar conexión
-  logger.info('Conectando a WhatsApp...');
-  logger.info('Si es la primera vez, escanea el QR que aparecerá a continuación.');
-  await initWhatsApp();
-
-  logger.info('WhatsApp listo. Listando grupos disponibles...');
-  await listGroups();
-
-  // 3. Iniciar servidor HTTP (recibe PDFs de Power Automate)
+  // 2. Iniciar servidor HTTP primero para que Railway pueda hacer health check
   await startServer();
 
-  logger.info('✅ Bot listo. Esperando PDFs en POST /send');
+  // 3. Conectar WhatsApp en segundo plano (no bloqueamos el servidor)
+  logger.info('Conectando a WhatsApp...');
+  logger.info('Si es la primera vez, escanea el QR que aparecerá a continuación.');
+  initWhatsApp().then(async () => {
+    logger.info('WhatsApp listo. Listando grupos disponibles...');
+    await listGroups();
+    logger.info('✅ Bot listo. Esperando PDFs en POST /send');
+  }).catch((err) => {
+    logger.error({ err: err.message }, 'Error al conectar WhatsApp');
+  });
 }
 
 // ─── Señales de cierre graceful ──────────────────────────────────────────────
