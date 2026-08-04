@@ -35,6 +35,102 @@ import { generateSafeFilename, removeFile } from './utils.js';
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 
+// ─── GET / (panel web) ───────────────────────────────────────────────────────
+
+app.get('/', (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>WhatsApp Bot — Sesiones</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; background: #f0f2f5; min-height: 100vh; padding: 32px 16px; }
+    h1 { color: #128C7E; margin-bottom: 24px; }
+    .card { background: white; border-radius: 12px; padding: 24px; margin-bottom: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+    .sessions { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .session { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.1); position: relative; }
+    .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+    .badge.ok  { background: #dcfce7; color: #166534; }
+    .badge.qr  { background: #fef9c3; color: #854d0e; }
+    .badge.off { background: #fee2e2; color: #991b1b; }
+    .session h3 { margin-bottom: 8px; font-size: 16px; }
+    .btn { display: inline-block; padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; font-size: 14px; font-weight: 600; text-decoration: none; }
+    .btn-green  { background: #25D366; color: white; }
+    .btn-red    { background: #ef4444; color: white; margin-left: 8px; }
+    .btn-gray   { background: #e5e7eb; color: #374151; }
+    input { width: 100%; padding: 10px 14px; border: 1.5px solid #d1d5db; border-radius: 8px; font-size: 15px; margin-bottom: 12px; outline: none; }
+    input:focus { border-color: #25D366; }
+    .row { display: flex; gap: 8px; align-items: center; }
+    #msg { margin-top: 12px; font-size: 14px; color: #6b7280; }
+    .empty { color: #9ca3af; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <h1>📱 WhatsApp Bot — Sesiones</h1>
+
+  <div class="card">
+    <h2 style="margin-bottom:16px;font-size:16px;color:#374151;">Nueva sesión</h2>
+    <div class="row">
+      <input id="newId" placeholder='Nombre de sesión (ej: andrei, empresa)' style="margin:0"/>
+      <button class="btn btn-green" onclick="crearSesion()">Generar QR</button>
+    </div>
+    <div id="msg"></div>
+  </div>
+
+  <div id="sessions" class="sessions"></div>
+
+  <script>
+    async function cargar() {
+      const r = await fetch('/sessions');
+      const { sessions } = await r.json();
+      const el = document.getElementById('sessions');
+      if (!sessions.length) {
+        el.innerHTML = '<p class="empty">No hay sesiones aún. Creá una arriba.</p>';
+        return;
+      }
+      el.innerHTML = sessions.map(s => {
+        const badge = s.connected ? '<span class="badge ok">✅ Conectado</span>'
+                    : s.hasQr    ? '<span class="badge qr">⚡ Esperando QR</span>'
+                    :              '<span class="badge off">⭕ Desconectado</span>';
+        const qrBtn = !s.connected
+          ? \`<a class="btn btn-green" href="/sessions/\${s.id}/qr" target="_blank">Ver QR</a>\`
+          : \`<a class="btn btn-gray" href="/sessions/\${s.id}/groups" target="_blank">Ver grupos</a>\`;
+        return \`<div class="session">
+          <h3>\${s.id}</h3>
+          \${badge}
+          <div style="margin-top:14px">
+            \${qrBtn}
+            <button class="btn btn-red" onclick="eliminar('\${s.id}')">Eliminar</button>
+          </div>
+        </div>\`;
+      }).join('');
+    }
+
+    async function crearSesion() {
+      const id = document.getElementById('newId').value.trim().replace(/[^a-zA-Z0-9_-]/g, '-');
+      if (!id) { document.getElementById('msg').textContent = 'Ingresá un nombre.'; return; }
+      document.getElementById('msg').textContent = 'Creando sesión...';
+      window.open('/sessions/' + id + '/qr', '_blank');
+      document.getElementById('newId').value = '';
+      document.getElementById('msg').textContent = 'Escaneá el QR que se abrió en la nueva pestaña.';
+      setTimeout(cargar, 2000);
+    }
+
+    async function eliminar(id) {
+      if (!confirm('¿Eliminar la sesión "' + id + '"?')) return;
+      await fetch('/sessions/' + id, { method: 'DELETE' });
+      cargar();
+    }
+
+    cargar();
+    setInterval(cargar, 5000);
+  </script>
+</body>
+</html>`);
+});
+
 // ─── GET /sessions ────────────────────────────────────────────────────────────
 
 app.get('/sessions', (req, res) => {
