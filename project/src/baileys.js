@@ -1,13 +1,7 @@
 /**
  * baileys.js
- * Gestiona la conexión a WhatsApp usando @whiskeysockets/baileys.
- *
- * Responsabilidades:
- * - Iniciar y mantener la sesión de WhatsApp.
- * - Persistir credenciales en la carpeta auth/.
- * - Reconectar automáticamente ante desconexiones.
- * - Mostrar QR en consola cuando sea necesario.
- * - Exponer una función sendDocument() para enviar PDFs.
+ * Gestiona múltiples sesiones de WhatsApp usando @whiskeysockets/baileys.
+ * Cada sesión tiene su propia carpeta auth/<sessionId> y su propio socket.
  */
 
 import {
@@ -16,67 +10,120 @@ import {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
-  isJidGroup,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import fse from 'fs-extra';
 import QRCode from 'qrcode';
 import pino from 'pino';
+import path from 'path';
 import config from './config.js';
 import logger from './logger.js';
 import { sleep } from './utils.js';
 
-// QR actual como data URL (para servir en /qr)
-let currentQrDataUrl = null;
-
-export function getCurrentQr() {
-  return currentQrDataUrl;
-}
-
-// Logger silencioso para Baileys (evita flood de logs internos)
 const baileysLogger = pino({ level: 'silent' });
 
-let sock = null;
-let isConnected = false;
-let reconnectAttempts = 0;
-let connectionResolve = null;
-
-// Promesa que se resuelve cuando WhatsApp está listo para enviar mensajes
-let connectionReadyPromise = null;
-
 /**
- * Inicializa la conexión de WhatsApp.
- * Retorna una promesa que se resuelve cuando la sesión está lista.
+ * sessions: Map<sessionId, SessionState>
+ * SessionState: { sock, isConnected, qrDataUrl, reconnectAttempts, readyResolve }
  */
-export async function initWhatsApp() {
-  connectionReadyPromise = new Promise((resolve) => {
-    connectionResolve = resolve;
-  });
+const sessions = new Map();
 
-  await connect();
+function authPath(sessionId) {
+  return path.join(config.paths.auth, sessionId);
+}
 
-  return connectionReadyPromise;
+export function getSession(sessionId) {
+  return sessions.get(sessionId) || null;
+}
+
+export function listSessions() {
+  return Array.from(sessions.entries()).map(([id, s]) => ({
+    id,
+    connected: s.isConnected,
+    hasQr: !!s.qrDataUrl,
+    reconnectAttempts: s.reconnectAttempts,
+  }));
+}
+
+export function getFirstConnectedSession() {
+  for (const [id, s] of sessions.entries()) {
+    if (s.isConnected) return id;
+  }
+  return null;
 }
 
 /**
- * Función interna de conexión. Se llama también en reconexiones.
+ * Crea una nueva sesión o retorna la existente.
+ * @param {string} sessionId
  */
-async function connect() {
-  await fse.ensureDir(config.paths.auth);
+export async function createSession(sessionId) {
+  if (sessions.has(sessionId)) return sessions.get(sessionId);
 
-  const { state, saveCreds } = await useMultiFileAuthState(config.paths.auth);
+  const s = {
+    sock: null,
+    isConnected: false,
+    qrDataUrl: null,
+    reconnectAttempts: 0,
+    readyResolve: null,
+  };
+  sessions.set(sessionId, s);
+  await connect(sessionId);
+  return s;
+}
+
+/**
+ * Elimina una sesión: cierra el socket y borra la carpeta auth/<sessionId>.
+ * @param {string} sessionId
+ */
+export async function deleteSession(sessionId) {
+  const s = sessions.get(sessionId);
+  if (s) {
+    try { s.sock?.end(); } catch {}
+    sessions.delete(sessionId);
+  }
+  await fse.remove(authPath(sessionId));
+  logger.info({ sessionId }, 'Sesión eliminada');
+}
+
+/**
+ * Carga las sesiones existentes en auth/ al arrancar el proceso.
+ */
+export async function loadExistingSessions() {
+  await fse.ensureDir(config.paths.auth);
+  const entries = await fse.readdir(config.paths.auth, { withFileTypes: true });
+  const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+
+  if (dirs.length === 0) {
+    logger.info('No hay sesiones previas. Creá una en GET /sessions/:id/qr');
+    return;
+  }
+
+  logger.info({ sessions: dirs }, 'Cargando sesiones existentes...');
+  for (const id of dirs) {
+    await createSession(id);
+  }
+}
+
+async function connect(sessionId) {
+  const s = sessions.get(sessionId);
+  if (!s) return;
+
+  const ap = authPath(sessionId);
+  await fse.ensureDir(ap);
+
+  const { state, saveCreds } = await useMultiFileAuthState(ap);
   const { version } = await fetchLatestBaileysVersion();
 
-  logger.info({ version }, 'Iniciando Baileys con versión de WhatsApp Web');
+  logger.info({ sessionId, version }, 'Iniciando Baileys');
 
-  sock = makeWASocket({
+  const sock = makeWASocket({
     version,
     logger: baileysLogger,
     auth: {
       creds: state.creds,
       keys: makeCacheableSignalKeyStore(state.keys, baileysLogger),
     },
-    printQRInTerminal: false, // Lo manejamos manualmente
+    printQRInTerminal: false,
     browser: ['PowerBI Bot', 'Chrome', '120.0.0'],
     connectTimeoutMs: 60_000,
     defaultQueryTimeoutMs: 30_000,
@@ -84,162 +131,103 @@ async function connect() {
     retryRequestDelayMs: 500,
   });
 
-  // Guardar credenciales cuando cambien
+  s.sock = sock;
   sock.ev.on('creds.update', saveCreds);
 
-  // Manejar actualizaciones de conexión
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    // Generar QR como imagen y servirlo en /qr
     if (qr) {
-      currentQrDataUrl = await QRCode.toDataURL(qr);
-      logger.info('⚡ QR listo — abrí /qr en el navegador para escanearlo');
+      s.qrDataUrl = await QRCode.toDataURL(qr);
+      logger.info({ sessionId }, `⚡ QR listo — abrí /sessions/${sessionId}/qr en el navegador`);
     }
 
     if (connection === 'open') {
-      isConnected = true;
-      reconnectAttempts = 0;
-      logger.info('✅ WhatsApp conectado exitosamente');
-
-      // Resolver la promesa de conexión lista
-      if (connectionResolve) {
-        connectionResolve();
-        connectionResolve = null;
+      s.isConnected = true;
+      s.qrDataUrl = null;
+      s.reconnectAttempts = 0;
+      logger.info({ sessionId }, '✅ WhatsApp conectado');
+      if (s.readyResolve) {
+        s.readyResolve();
+        s.readyResolve = null;
       }
     }
 
     if (connection === 'close') {
-      isConnected = false;
-      const boom = lastDisconnect?.error instanceof Boom
-        ? lastDisconnect.error
-        : null;
+      s.isConnected = false;
+      const boom = lastDisconnect?.error instanceof Boom ? lastDisconnect.error : null;
       const statusCode = boom?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
-      logger.warn(
-        { statusCode, shouldReconnect },
-        'Conexión de WhatsApp cerrada'
-      );
+      logger.warn({ sessionId, statusCode, shouldReconnect }, 'Conexión cerrada');
 
       if (shouldReconnect) {
-        await handleReconnect();
+        await handleReconnect(sessionId);
       } else {
-        logger.error(
-          'Sesión cerrada (logged out). Elimina la carpeta auth/ y reinicia para escanear QR nuevamente.'
-        );
-        process.exit(1);
+        logger.warn({ sessionId }, 'Logged out. Borrando auth y mostrando nuevo QR...');
+        s.qrDataUrl = null;
+        s.reconnectAttempts = 0;
+        await fse.emptyDir(ap);
+        await connect(sessionId);
       }
     }
   });
 }
 
-/**
- * Maneja la lógica de reconexión con backoff exponencial.
- */
-async function handleReconnect() {
-  reconnectAttempts++;
+async function handleReconnect(sessionId) {
+  const s = sessions.get(sessionId);
+  if (!s) return;
+  s.reconnectAttempts++;
 
-  if (reconnectAttempts > config.reconnect.maxAttempts) {
-    logger.error(
-      { maxAttempts: config.reconnect.maxAttempts },
-      'Se superó el máximo de reintentos de reconexión. Reiniciando proceso...'
-    );
-    process.exit(1);
+  if (s.reconnectAttempts > config.reconnect.maxAttempts) {
+    logger.error({ sessionId }, 'Máximo de reintentos superado. Sesión eliminada.');
+    sessions.delete(sessionId);
+    return;
   }
 
   const delay = Math.min(
-    config.reconnect.delayMs * Math.pow(2, reconnectAttempts - 1),
+    config.reconnect.delayMs * Math.pow(2, s.reconnectAttempts - 1),
     60_000
   );
 
-  logger.info(
-    { attempt: reconnectAttempts, delayMs: delay },
-    'Reconectando WhatsApp...'
-  );
-
+  logger.info({ sessionId, attempt: s.reconnectAttempts, delayMs: delay }, 'Reconectando...');
   await sleep(delay);
-  await connect();
+  await connect(sessionId);
 }
 
-/**
- * Envía un documento PDF a un JID de WhatsApp.
- * @param {string} jid - ID del destinatario (número@s.whatsapp.net o grupo@g.us)
- * @param {Buffer} fileBuffer - Buffer del archivo PDF.
- * @param {string} filename - Nombre del archivo para mostrar.
- * @param {string} caption - Texto que acompaña el documento.
- */
-export async function sendDocument(jid, fileBuffer, filename, caption) {
-  if (!sock || !isConnected) {
-    throw new Error('WhatsApp no está conectado. No se puede enviar el documento.');
-  }
+// ─── Envío ───────────────────────────────────────────────────────────────────
 
-  logger.info({ jid, filename, sizeBytes: fileBuffer.length }, 'Enviando documento por WhatsApp');
-
-  await sock.sendMessage(jid, {
+export async function sendDocumentVia(sessionId, jid, fileBuffer, filename, caption) {
+  const s = sessions.get(sessionId);
+  if (!s?.isConnected) throw new Error(`Sesión "${sessionId}" no está conectada`);
+  logger.info({ sessionId, jid, filename }, 'Enviando documento');
+  await s.sock.sendMessage(jid, {
     document: fileBuffer,
     mimetype: 'application/pdf',
     fileName: filename,
-    caption: caption,
+    caption,
   });
-
-  logger.info({ jid, filename }, '✅ Documento enviado exitosamente');
+  logger.info({ sessionId, jid }, '✅ Documento enviado');
 }
 
-/**
- * Envía una imagen a un JID de WhatsApp.
- * @param {string} jid - ID del destinatario (número@s.whatsapp.net o grupo@g.us)
- * @param {Buffer} imageBuffer - Buffer de la imagen.
- * @param {string} mimetype - MIME type (image/jpeg, image/png, etc.)
- * @param {string} caption - Texto que acompaña la imagen.
- */
-export async function sendImage(jid, imageBuffer, mimetype, caption) {
-  if (!sock || !isConnected) {
-    throw new Error('WhatsApp no está conectado. No se puede enviar la imagen.');
-  }
-
-  logger.info({ jid, mimetype, sizeBytes: imageBuffer.length }, 'Enviando imagen por WhatsApp');
-
-  await sock.sendMessage(jid, {
-    image: imageBuffer,
-    mimetype,
-    caption: caption,
-  });
-
-  logger.info({ jid }, '✅ Imagen enviada exitosamente');
+export async function sendImageVia(sessionId, jid, imageBuffer, mimetype, caption) {
+  const s = sessions.get(sessionId);
+  if (!s?.isConnected) throw new Error(`Sesión "${sessionId}" no está conectada`);
+  logger.info({ sessionId, jid, mimetype }, 'Enviando imagen');
+  await s.sock.sendMessage(jid, { image: imageBuffer, mimetype, caption });
+  logger.info({ sessionId, jid }, '✅ Imagen enviada');
 }
 
-/**
- * Retorna si WhatsApp está actualmente conectado.
- */
-export function getConnectionStatus() {
-  return {
-    connected: isConnected,
-    reconnectAttempts,
-  };
-}
-
-/**
- * Obtiene todos los grupos a los que pertenece el bot.
- * Útil para descubrir los IDs de grupo (@g.us).
- */
-export async function listGroups() {
-  if (!sock || !isConnected) {
-    logger.warn('WhatsApp no conectado. No se pueden listar grupos.');
+export async function listGroupsVia(sessionId) {
+  const s = sessions.get(sessionId);
+  if (!s?.isConnected) {
+    logger.warn({ sessionId }, 'No conectado. No se pueden listar grupos.');
     return [];
   }
-
-  const groups = await sock.groupFetchAllParticipating();
-  const list = Object.values(groups).map((g) => ({
+  const groups = await s.sock.groupFetchAllParticipating();
+  return Object.values(groups).map((g) => ({
     id: g.id,
     name: g.subject,
     participants: g.participants?.length || 0,
   }));
-
-  logger.info({ total: list.length }, 'Grupos disponibles:');
-  list.forEach((g) => {
-    logger.info(`  📱 [${g.id}] ${g.name} (${g.participants} participantes)`);
-  });
-
-  return list;
 }
