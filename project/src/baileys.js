@@ -218,6 +218,14 @@ export async function sendImageVia(sessionId, jid, imageBuffer, mimetype, captio
   logger.info({ sessionId, jid }, '✅ Imagen enviada');
 }
 
+export async function sendTextVia(sessionId, jid, text) {
+  const s = sessions.get(sessionId);
+  if (!s?.isConnected) throw new Error(`Sesión "${sessionId}" no está conectada`);
+  logger.info({ sessionId, jid }, 'Enviando texto');
+  await s.sock.sendMessage(jid, { text });
+  logger.info({ sessionId, jid }, '✅ Texto enviado');
+}
+
 export async function listGroupsVia(sessionId) {
   const s = sessions.get(sessionId);
   if (!s?.isConnected) {

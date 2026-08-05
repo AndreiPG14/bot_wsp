@@ -29,7 +29,7 @@ import {
   getFirstConnectedSession,
   listGroupsVia,
 } from './baileys.js';
-import { sendPdf, sendImage, IMAGE_MIMETYPES } from './sendWhatsapp.js';
+import { sendPdf, sendImage, sendText, IMAGE_MIMETYPES } from './sendWhatsapp.js';
 import { generateSafeFilename, removeFile } from './utils.js';
 
 const app = express();
@@ -254,8 +254,8 @@ app.post('/send', async (req, res) => {
 app.post('/send-image', async (req, res) => {
   const { from, to, filename, fileContent, mimetype: mimetypeParam, caption } = req.body;
 
-  if (!fileContent) {
-    return res.status(400).json({ error: 'El campo fileContent es requerido (imagen en base64)' });
+  if (!fileContent && !caption) {
+    return res.status(400).json({ error: 'Se requiere fileContent (imagen) o caption (texto)' });
   }
 
   const sessionId = from || getFirstConnectedSession();
@@ -276,7 +276,17 @@ app.post('/send-image', async (req, res) => {
     return res.status(400).json({ error: `Mimetype no soportado: ${mimetype}` });
   }
 
-  logger.info({ sessionId, recipients, filename, mimetype }, '🖼️ Imagen recibida');
+  logger.info({ sessionId, recipients, filename, mimetype, hasFile: !!fileContent }, '🖼️ Imagen recibida');
+
+  // Si no hay imagen, mandar solo el texto
+  if (!fileContent) {
+    try {
+      const result = await sendText(sessionId, recipients, caption);
+      return res.json({ success: true, sessionId, whatsapp: result });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
 
   let filePath = null;
   try {
@@ -293,6 +303,41 @@ app.post('/send-image', async (req, res) => {
     res.status(500).json({ error: err.message });
   } finally {
     if (filePath) await removeFile(filePath);
+  }
+});
+
+// ─── POST /send-text ──────────────────────────────────────────────────────────
+//
+// Body:
+// {
+//   "from": "mi-sesion",
+//   "to": ["5491112345678", "120363...@g.us"],
+//   "text": "Hola! Este es un mensaje de texto"
+// }
+
+app.post('/send-text', async (req, res) => {
+  const { from, to, text } = req.body;
+
+  if (!text) {
+    return res.status(400).json({ error: 'El campo text es requerido' });
+  }
+
+  const sessionId = from || getFirstConnectedSession();
+  if (!sessionId) {
+    return res.status(503).json({ error: 'No hay sesiones conectadas. Escaneá un QR en /sessions/:id/qr' });
+  }
+
+  const recipients = normalizeRecipients(to);
+  if (recipients.length === 0) {
+    return res.status(400).json({ error: 'El campo "to" debe tener al menos un destinatario' });
+  }
+
+  try {
+    const result = await sendText(sessionId, recipients, text);
+    res.json({ success: true, sessionId, whatsapp: result });
+  } catch (err) {
+    logger.error({ err: err.message }, 'Error al procesar /send-text');
+    res.status(500).json({ error: err.message });
   }
 });
 
