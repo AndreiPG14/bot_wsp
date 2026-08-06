@@ -11,6 +11,18 @@ import { toWhatsAppJid, sleep } from './utils.js';
 
 export const IMAGE_MIMETYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
 
+// Cola global para serializar todos los envíos y respetar el rate limit
+let sendQueue = Promise.resolve();
+function enqueue(fn) {
+  sendQueue = sendQueue.then(fn);
+  return sendQueue;
+}
+
+// Delay con jitter humano: entre min y max ms
+function humanDelay(minMs = 5000, maxMs = 9000) {
+  return sleep(minMs + Math.floor(Math.random() * (maxMs - minMs)));
+}
+
 /**
  * Convierte un destinatario a JID de WhatsApp.
  * Acepta:
@@ -44,25 +56,26 @@ export async function sendPdf(sessionId, recipients, filePath, caption = '') {
 
   const results = { sent: 0, failed: 0, details: [] };
 
-  for (const recipient of recipients) {
-    const jid = resolveJid(recipient);
-    try {
-      await sendDocumentVia(sessionId, jid, fileBuffer, filename, caption);
-      results.sent++;
-      results.details.push({ recipient, jid, ok: true });
-      await sleep(1500);
-    } catch (err) {
-      results.failed++;
-      results.details.push({ recipient, jid, ok: false, error: err.message });
-      logger.error({ sessionId, jid, err: err.message }, 'Error al enviar PDF');
+  return enqueue(async () => {
+    for (const recipient of recipients) {
+      const jid = resolveJid(recipient);
+      try {
+        await sendDocumentVia(sessionId, jid, fileBuffer, filename, caption);
+        results.sent++;
+        results.details.push({ recipient, jid, ok: true });
+        await humanDelay();
+      } catch (err) {
+        results.failed++;
+        results.details.push({ recipient, jid, ok: false, error: err.message });
+        logger.error({ sessionId, jid, err: err.message }, 'Error al enviar PDF');
+      }
     }
-  }
-
-  logger.info(
-    { sessionId, sent: results.sent, failed: results.failed },
-    `Envío completado: ${results.sent} exitosos, ${results.failed} fallidos`
-  );
-  return results;
+    logger.info(
+      { sessionId, sent: results.sent, failed: results.failed },
+      `Envío completado: ${results.sent} exitosos, ${results.failed} fallidos`
+    );
+    return results;
+  });
 }
 
 /**
@@ -76,22 +89,23 @@ export async function sendPdf(sessionId, recipients, filePath, caption = '') {
 export async function sendText(sessionId, recipients, text) {
   const results = { sent: 0, failed: 0, details: [] };
 
-  for (const recipient of recipients) {
-    const jid = resolveJid(recipient);
-    try {
-      await sendTextVia(sessionId, jid, text);
-      results.sent++;
-      results.details.push({ recipient, jid, ok: true });
-      await sleep(1500);
-    } catch (err) {
-      results.failed++;
-      results.details.push({ recipient, jid, ok: false, error: err.message });
-      logger.error({ sessionId, jid, err: err.message }, 'Error al enviar texto');
+  return enqueue(async () => {
+    for (const recipient of recipients) {
+      const jid = resolveJid(recipient);
+      try {
+        await sendTextVia(sessionId, jid, text);
+        results.sent++;
+        results.details.push({ recipient, jid, ok: true });
+        await humanDelay();
+      } catch (err) {
+        results.failed++;
+        results.details.push({ recipient, jid, ok: false, error: err.message });
+        logger.error({ sessionId, jid, err: err.message }, 'Error al enviar texto');
+      }
     }
-  }
-
-  logger.info({ sessionId, sent: results.sent, failed: results.failed }, 'Envío de texto completado');
-  return results;
+    logger.info({ sessionId, sent: results.sent, failed: results.failed }, 'Envío de texto completado');
+    return results;
+  });
 }
 
 /**
@@ -115,23 +129,24 @@ export async function sendImage(sessionId, recipients, filePath, mimetype, capti
 
   const results = { sent: 0, failed: 0, details: [] };
 
-  for (const recipient of recipients) {
-    const jid = resolveJid(recipient);
-    try {
-      await sendImageVia(sessionId, jid, fileBuffer, mimetype, caption);
-      results.sent++;
-      results.details.push({ recipient, jid, ok: true });
-      await sleep(1500);
-    } catch (err) {
-      results.failed++;
-      results.details.push({ recipient, jid, ok: false, error: err.message });
-      logger.error({ sessionId, jid, err: err.message }, 'Error al enviar imagen');
+  return enqueue(async () => {
+    for (const recipient of recipients) {
+      const jid = resolveJid(recipient);
+      try {
+        await sendImageVia(sessionId, jid, fileBuffer, mimetype, caption);
+        results.sent++;
+        results.details.push({ recipient, jid, ok: true });
+        await humanDelay();
+      } catch (err) {
+        results.failed++;
+        results.details.push({ recipient, jid, ok: false, error: err.message });
+        logger.error({ sessionId, jid, err: err.message }, 'Error al enviar imagen');
+      }
     }
-  }
-
-  logger.info(
-    { sessionId, sent: results.sent, failed: results.failed },
-    `Envío completado: ${results.sent} exitosos, ${results.failed} fallidos`
-  );
-  return results;
+    logger.info(
+      { sessionId, sent: results.sent, failed: results.failed },
+      `Envío completado: ${results.sent} exitosos, ${results.failed} fallidos`
+    );
+    return results;
+  });
 }

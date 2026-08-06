@@ -108,6 +108,12 @@ async function connect(sessionId) {
   const s = sessions.get(sessionId);
   if (!s) return;
 
+  // Cerrar socket anterior si existe para evitar conexiones duplicadas
+  if (s.sock) {
+    try { s.sock.end(); } catch {}
+    s.sock = null;
+  }
+
   const ap = authPath(sessionId);
   await fse.ensureDir(ap);
 
@@ -124,7 +130,7 @@ async function connect(sessionId) {
       keys: makeCacheableSignalKeyStore(state.keys, baileysLogger),
     },
     printQRInTerminal: false,
-    browser: ['PowerBI Bot', 'Chrome', '120.0.0'],
+    browser: ['Chrome (Linux)', 'Chrome', '124.0.6367.207'],
     connectTimeoutMs: 60_000,
     defaultQueryTimeoutMs: 30_000,
     keepAliveIntervalMs: 15_000,
@@ -168,6 +174,8 @@ async function connect(sessionId) {
         s.qrDataUrl = null;
         s.reconnectAttempts = 0;
         await fse.emptyDir(ap);
+        // Esperar antes de reconectar para no ser detectado como bot
+        await sleep(8000);
         await connect(sessionId);
       }
     }
