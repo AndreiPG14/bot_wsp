@@ -26,6 +26,37 @@ function humanDelay(minMs = 5000, maxMs = 9000) {
   return sleep(minMs + Math.floor(Math.random() * (maxMs - minMs)));
 }
 
+// Protección anti-ban: si fallan 3 mensajes seguidos, pausa 5 minutos
+const CONSECUTIVE_FAIL_LIMIT = 3;
+const PAUSE_MS = 5 * 60 * 1000;
+let consecutiveFails = 0;
+let pausedUntil = 0;
+
+function checkPause() {
+  if (Date.now() < pausedUntil) {
+    const remaining = Math.ceil((pausedUntil - Date.now()) / 1000);
+    logger.warn({ remainingSecs: remaining }, '⛔ Envío pausado por protección anti-ban');
+    return true;
+  }
+  return false;
+}
+
+function recordSuccess() {
+  consecutiveFails = 0;
+}
+
+function recordFail() {
+  consecutiveFails++;
+  if (consecutiveFails >= CONSECUTIVE_FAIL_LIMIT) {
+    pausedUntil = Date.now() + PAUSE_MS;
+    logger.error(
+      { consecutiveFails, pauseMinutes: 5 },
+      '🚨 3 fallos seguidos detectados — pausando envíos 5 minutos para evitar ban'
+    );
+    consecutiveFails = 0;
+  }
+}
+
 /**
  * Convierte un destinatario a JID de WhatsApp.
  * Acepta:
@@ -61,16 +92,23 @@ export async function sendPdf(sessionId, recipients, filePath, caption = '') {
 
   return enqueue(async () => {
     for (const recipient of recipients) {
+      if (checkPause()) {
+        results.failed += recipients.length - results.sent - results.failed;
+        results.details.push({ recipient, ok: false, error: 'Envío pausado por protección anti-ban' });
+        break;
+      }
       const jid = resolveJid(recipient);
       try {
         await sendDocumentVia(sessionId, jid, fileBuffer, filename, caption);
         results.sent++;
         results.details.push({ recipient, jid, ok: true });
+        recordSuccess();
         await humanDelay();
       } catch (err) {
         results.failed++;
         results.details.push({ recipient, jid, ok: false, error: err.message });
         logger.error({ sessionId, jid, err: err.message }, 'Error al enviar PDF');
+        recordFail();
       }
     }
     logger.info(
@@ -94,16 +132,23 @@ export async function sendText(sessionId, recipients, text) {
 
   return enqueue(async () => {
     for (const recipient of recipients) {
+      if (checkPause()) {
+        results.failed += recipients.length - results.sent - results.failed;
+        results.details.push({ recipient, ok: false, error: 'Envío pausado por protección anti-ban' });
+        break;
+      }
       const jid = resolveJid(recipient);
       try {
         await sendTextVia(sessionId, jid, text);
         results.sent++;
         results.details.push({ recipient, jid, ok: true });
+        recordSuccess();
         await humanDelay();
       } catch (err) {
         results.failed++;
         results.details.push({ recipient, jid, ok: false, error: err.message });
         logger.error({ sessionId, jid, err: err.message }, 'Error al enviar texto');
+        recordFail();
       }
     }
     logger.info({ sessionId, sent: results.sent, failed: results.failed }, 'Envío de texto completado');
@@ -134,16 +179,23 @@ export async function sendImage(sessionId, recipients, filePath, mimetype, capti
 
   return enqueue(async () => {
     for (const recipient of recipients) {
+      if (checkPause()) {
+        results.failed += recipients.length - results.sent - results.failed;
+        results.details.push({ recipient, ok: false, error: 'Envío pausado por protección anti-ban' });
+        break;
+      }
       const jid = resolveJid(recipient);
       try {
         await sendImageVia(sessionId, jid, fileBuffer, mimetype, caption);
         results.sent++;
         results.details.push({ recipient, jid, ok: true });
+        recordSuccess();
         await humanDelay();
       } catch (err) {
         results.failed++;
         results.details.push({ recipient, jid, ok: false, error: err.message });
         logger.error({ sessionId, jid, err: err.message }, 'Error al enviar imagen');
+        recordFail();
       }
     }
     logger.info(

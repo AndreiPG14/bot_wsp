@@ -140,6 +140,14 @@ async function connect(sessionId) {
   s.sock = sock;
   sock.ev.on('creds.update', saveCreds);
 
+  sock.ev.on('messages.update', (updates) => {
+    for (const u of updates) {
+      if (!u.update?.status) continue;
+      const status = { 2: 'enviado', 3: 'entregado', 4: 'leído' }[u.update.status];
+      if (status) logger.info({ sessionId, jid: u.key.remoteJid, status }, `📬 Mensaje ${status}`);
+    }
+  });
+
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
@@ -209,29 +217,29 @@ export async function sendDocumentVia(sessionId, jid, fileBuffer, filename, capt
   const s = sessions.get(sessionId);
   if (!s?.isConnected) throw new Error(`Sesión "${sessionId}" no está conectada`);
   logger.info({ sessionId, jid, filename }, 'Enviando documento');
-  await s.sock.sendMessage(jid, {
+  const result = await s.sock.sendMessage(jid, {
     document: fileBuffer,
     mimetype: 'application/pdf',
     fileName: filename,
     caption,
   });
-  logger.info({ sessionId, jid }, '✅ Documento enviado');
+  logger.info({ sessionId, jid, msgId: result?.key?.id, status: result?.status }, '✅ Documento enviado');
 }
 
 export async function sendImageVia(sessionId, jid, imageBuffer, mimetype, caption) {
   const s = sessions.get(sessionId);
   if (!s?.isConnected) throw new Error(`Sesión "${sessionId}" no está conectada`);
   logger.info({ sessionId, jid, mimetype }, 'Enviando imagen');
-  await s.sock.sendMessage(jid, { image: imageBuffer, mimetype, caption });
-  logger.info({ sessionId, jid }, '✅ Imagen enviada');
+  const result = await s.sock.sendMessage(jid, { image: imageBuffer, mimetype, caption });
+  logger.info({ sessionId, jid, msgId: result?.key?.id, status: result?.status }, '✅ Imagen enviada');
 }
 
 export async function sendTextVia(sessionId, jid, text) {
   const s = sessions.get(sessionId);
   if (!s?.isConnected) throw new Error(`Sesión "${sessionId}" no está conectada`);
   logger.info({ sessionId, jid }, 'Enviando texto');
-  await s.sock.sendMessage(jid, { text });
-  logger.info({ sessionId, jid }, '✅ Texto enviado');
+  const result = await s.sock.sendMessage(jid, { text });
+  logger.info({ sessionId, jid, msgId: result?.key?.id, status: result?.status }, '✅ Texto enviado');
 }
 
 export async function listGroupsVia(sessionId) {

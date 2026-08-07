@@ -347,6 +347,35 @@ app.post('/send-text', async (req, res) => {
   })();
 });
 
+// ─── POST /check-numbers ─────────────────────────────────────────────────────
+// Verifica cuáles números están registrados en WhatsApp
+// Body: { "from": "SESSION_ID", "numbers": ["51974616900", "51962704710"] }
+
+app.post('/check-numbers', async (req, res) => {
+  const { from, numbers } = req.body;
+  if (!numbers?.length) return res.status(400).json({ error: 'El campo numbers es requerido' });
+
+  const sessionId = from || getFirstConnectedSession();
+  if (!sessionId) return res.status(503).json({ error: 'No hay sesiones conectadas' });
+
+  const s = getSession(sessionId);
+  if (!s?.isConnected) return res.status(503).json({ error: 'Sesión no conectada' });
+
+  try {
+    const jids = numbers.map(n => (n.includes('@') ? n : n.replace(/\D/g, '') + '@s.whatsapp.net'));
+    const result = await s.sock.onWhatsApp(...jids);
+    const found = new Set((result || []).map(r => r.jid));
+    const details = numbers.map((n, i) => ({
+      number: n,
+      jid: jids[i],
+      onWhatsApp: found.has(jids[i]),
+    }));
+    res.json({ sessionId, details });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── GET /health ──────────────────────────────────────────────────────────────
 
 app.get('/health', (req, res) => {
