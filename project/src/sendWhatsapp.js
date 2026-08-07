@@ -11,11 +11,14 @@ import { toWhatsAppJid, sleep } from './utils.js';
 
 export const IMAGE_MIMETYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
 
-// Cola global para serializar todos los envíos y respetar el rate limit
+// Cola global para serializar todos los envíos y respetar el rate limit.
+// La cadena de cola nunca queda en rejected — cada tarea mantiene su propio
+// resultado/error independiente para que un fallo no bloquee las siguientes.
 let sendQueue = Promise.resolve();
 function enqueue(fn) {
-  sendQueue = sendQueue.then(fn);
-  return sendQueue;
+  const task = sendQueue.then(fn);
+  sendQueue = task.catch(() => {}); // mantiene la cola viva aunque fn falle
+  return task;               // devuelve la promesa real con el resultado/error
 }
 
 // Delay con jitter humano: entre min y max ms

@@ -221,22 +221,25 @@ app.post('/send', async (req, res) => {
 
   logger.info({ sessionId, recipients, filename }, '📨 PDF recibido');
 
-  let filePath = null;
-  try {
-    const buffer = Buffer.from(fileContent, 'base64');
-    const safeName = generateSafeFilename(filename || 'reporte.pdf');
-    filePath = path.join(config.paths.attachments, safeName);
-    await fse.ensureDir(config.paths.attachments);
-    await fse.writeFile(filePath, buffer);
+  // Responder inmediatamente para evitar timeout del caller y reintentos duplicados
+  res.status(202).json({ success: true, message: 'Envío en proceso', sessionId, recipients: recipients.length });
 
-    const result = await sendPdf(sessionId, recipients, filePath, caption);
-    res.json({ success: true, sessionId, whatsapp: result });
-  } catch (err) {
-    logger.error({ err: err.message }, 'Error al procesar /send');
-    res.status(500).json({ error: err.message });
-  } finally {
-    if (filePath) await removeFile(filePath);
-  }
+  // Procesar en background
+  (async () => {
+    let filePath = null;
+    try {
+      const buffer = Buffer.from(fileContent, 'base64');
+      const safeName = generateSafeFilename(filename || 'reporte.pdf');
+      filePath = path.join(config.paths.attachments, safeName);
+      await fse.ensureDir(config.paths.attachments);
+      await fse.writeFile(filePath, buffer);
+      await sendPdf(sessionId, recipients, filePath, caption);
+    } catch (err) {
+      logger.error({ err: err.message }, 'Error al procesar /send');
+    } finally {
+      if (filePath) await removeFile(filePath);
+    }
+  })();
 });
 
 // ─── POST /send-image ─────────────────────────────────────────────────────────
@@ -278,32 +281,32 @@ app.post('/send-image', async (req, res) => {
 
   logger.info({ sessionId, recipients, filename, mimetype, hasFile: !!fileContent }, '🖼️ Imagen recibida');
 
-  // Si no hay imagen, mandar solo el texto
-  if (!fileContent) {
-    try {
-      const result = await sendText(sessionId, recipients, caption);
-      return res.json({ success: true, sessionId, whatsapp: result });
-    } catch (err) {
-      return res.status(500).json({ error: err.message });
+  // Responder inmediatamente para evitar timeout del caller y reintentos duplicados
+  res.status(202).json({ success: true, message: 'Envío en proceso', sessionId, recipients: recipients.length });
+
+  // Procesar en background
+  (async () => {
+    if (!fileContent) {
+      try { await sendText(sessionId, recipients, caption); } catch (err) {
+        logger.error({ err: err.message }, 'Error al enviar texto en /send-image');
+      }
+      return;
     }
-  }
 
-  let filePath = null;
-  try {
-    const buffer = Buffer.from(fileContent, 'base64');
-    const safeName = generateSafeFilename(filename || `imagen.${ext || 'jpg'}`);
-    filePath = path.join(config.paths.attachments, safeName);
-    await fse.ensureDir(config.paths.attachments);
-    await fse.writeFile(filePath, buffer);
-
-    const result = await sendImage(sessionId, recipients, filePath, mimetype, caption);
-    res.json({ success: true, sessionId, whatsapp: result });
-  } catch (err) {
-    logger.error({ err: err.message }, 'Error al procesar /send-image');
-    res.status(500).json({ error: err.message });
-  } finally {
-    if (filePath) await removeFile(filePath);
-  }
+    let filePath = null;
+    try {
+      const buffer = Buffer.from(fileContent, 'base64');
+      const safeName = generateSafeFilename(filename || `imagen.${ext || 'jpg'}`);
+      filePath = path.join(config.paths.attachments, safeName);
+      await fse.ensureDir(config.paths.attachments);
+      await fse.writeFile(filePath, buffer);
+      await sendImage(sessionId, recipients, filePath, mimetype, caption);
+    } catch (err) {
+      logger.error({ err: err.message }, 'Error al procesar /send-image');
+    } finally {
+      if (filePath) await removeFile(filePath);
+    }
+  })();
 });
 
 // ─── POST /send-text ──────────────────────────────────────────────────────────
@@ -332,13 +335,16 @@ app.post('/send-text', async (req, res) => {
     return res.status(400).json({ error: 'El campo "to" debe tener al menos un destinatario' });
   }
 
-  try {
-    const result = await sendText(sessionId, recipients, text);
-    res.json({ success: true, sessionId, whatsapp: result });
-  } catch (err) {
-    logger.error({ err: err.message }, 'Error al procesar /send-text');
-    res.status(500).json({ error: err.message });
-  }
+  // Responder inmediatamente para evitar timeout del caller y reintentos duplicados
+  res.status(202).json({ success: true, message: 'Envío en proceso', sessionId, recipients: recipients.length });
+
+  (async () => {
+    try {
+      await sendText(sessionId, recipients, text);
+    } catch (err) {
+      logger.error({ err: err.message }, 'Error al procesar /send-text');
+    }
+  })();
 });
 
 // ─── GET /health ──────────────────────────────────────────────────────────────
