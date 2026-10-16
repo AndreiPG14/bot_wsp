@@ -1,0 +1,79 @@
+{
+  "family": "bot-wsp",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/ecsTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "bot-wsp",
+      "image": "<AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/bot-wsp:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 3000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "NODE_ENV", "value": "production" },
+        { "name": "PORT", "value": "3000" },
+        { "name": "IMAP_HOST", "value": "outlook.office365.com" },
+        { "name": "IMAP_PORT", "value": "993" },
+        { "name": "IMAP_SECURE", "value": "true" },
+        { "name": "IMAP_MAILBOX", "value": "INBOX" },
+        { "name": "IMAP_PROCESSED_FOLDER", "value": "Procesados" },
+        { "name": "EMAIL_SUBJECT_FILTER", "value": "" },
+        { "name": "EMAIL_FROM_FILTER", "value": "" },
+        { "name": "WHATSAPP_NUMBERS", "value": "" },
+        { "name": "WHATSAPP_GROUPS", "value": "" },
+        { "name": "WHATSAPP_CAPTION", "value": "📊 Reporte Power BI actualizado" },
+        { "name": "POLLING_INTERVAL_SECONDS", "value": "60" }
+      ],
+      "secrets": [
+        {
+          "name": "IMAP_USER",
+          "valueFrom": "arn:aws:secretsmanager:<REGION>:<AWS_ACCOUNT_ID>:secret:bot-wsp/imap-XXXXXX:IMAP_USER::"
+        },
+        {
+          "name": "IMAP_PASS",
+          "valueFrom": "arn:aws:secretsmanager:<REGION>:<AWS_ACCOUNT_ID>:secret:bot-wsp/imap-XXXXXX:IMAP_PASS::"
+        }
+      ],
+      "mountPoints": [
+        {
+          "sourceVolume": "auth-data",
+          "containerPath": "/app/auth",
+          "readOnly": false
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 10
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/bot-wsp",
+          "awslogs-region": "<REGION>",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ],
+  "volumes": [
+    {
+      "name": "auth-data",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "<EFS_FILE_SYSTEM_ID>",
+        "rootDirectory": "/bot-wsp-auth",
+        "transitEncryption": "ENABLED"
+      }
+    }
+  ]
+}

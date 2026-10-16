@@ -1,6 +1,5 @@
-FROM node:20-alpine
+FROM node:20-alpine AS builder
 
-# Instalar dependencias del sistema necesarias para Baileys
 RUN apk add --no-cache \
     python3 \
     make \
@@ -13,20 +12,31 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
-# Copiar manifiestos de dependencias primero (mejor cache de Docker)
 COPY package*.json ./
+RUN npm ci --omit=dev
 
-# Instalar dependencias de producción
-RUN npm install --omit=dev
+# --- runtime stage ---
+FROM node:20-alpine
 
-# Copiar el resto del código fuente
+RUN apk add --no-cache \
+    cairo \
+    pango \
+    jpeg \
+    giflib \
+    librsvg \
+    tini
+
+WORKDIR /app
+
+COPY --from=builder /app/node_modules ./node_modules
 COPY . .
 
-# Crear carpetas necesarias (persisten dentro del contenedor)
 RUN mkdir -p auth processed attachments
 
-# Exponer puerto para el healthcheck HTTP
 EXPOSE 3000
 
-# Comando de inicio
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://localhost:3000/health || exit 1
+
+ENTRYPOINT ["tini", "--"]
 CMD ["node", "src/index.js"]
