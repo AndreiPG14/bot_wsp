@@ -22,7 +22,7 @@ function enqueue(fn) {
 }
 
 // Delay con jitter humano: entre min y max ms
-function humanDelay(minMs = 5000, maxMs = 9000) {
+function humanDelay(minMs = 10000, maxMs = 15000) {
   return sleep(minMs + Math.floor(Math.random() * (maxMs - minMs)));
 }
 
