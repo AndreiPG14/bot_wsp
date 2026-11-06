@@ -1,6 +1,7 @@
 /**
  * sendWhatsapp.js
  * Orquesta el envío de archivos a una lista de destinatarios via una sesión específica.
+ * Todos los envíos pasan por una sola cola con pausas "humanas" y protección anti-ban.
  */
 
 import path from 'path';
@@ -41,6 +42,11 @@ function checkPause() {
   return false;
 }
 
+/** Estado de la protección anti-ban, para mostrarlo en el panel. */
+export function sendStatus() {
+  return { pausedUntil: pausedUntil > Date.now() ? new Date(pausedUntil).toISOString() : null };
+}
+
 function recordSuccess() {
   consecutiveFails = 0;
 }
@@ -70,138 +76,92 @@ export function resolveJid(recipient) {
 }
 
 /**
+ * Recorre los destinatarios dentro de la cola, aplicando pausas y anti-ban.
+ * @param {(jid: string) => Promise<void>} sendOne
+ */
+function sendToAll(sessionId, recipients, sendOne, label) {
+  const results = { sent: 0, failed: 0, details: [] };
+
+  return enqueue(async () => {
+    for (const recipient of recipients) {
+      if (checkPause()) {
+        const pending = recipients.slice(results.sent + results.failed);
+        for (const r of pending) results.details.push({ recipient: r, ok: false, error: 'Envío pausado por protección anti-ban' });
+        results.failed += pending.length;
+        break;
+      }
+      const jid = resolveJid(recipient);
+      try {
+        await sendOne(jid);
+        results.sent++;
+        results.details.push({ recipient, jid, ok: true });
+        recordSuccess();
+        await humanDelay();
+      } catch (err) {
+        results.failed++;
+        results.details.push({ recipient, jid, ok: false, error: err.message });
+        logger.error({ sessionId, jid, err: err.message }, `Error al enviar ${label}`);
+        recordFail();
+      }
+    }
+    logger.info(
+      { sessionId, sent: results.sent, failed: results.failed },
+      `Envío de ${label} completado: ${results.sent} exitosos, ${results.failed} fallidos`
+    );
+    return results;
+  });
+}
+
+async function readFileOrThrow(filePath, label) {
+  try {
+    return await fse.readFile(filePath);
+  } catch (err) {
+    logger.error({ filePath, err: err.message }, `No se pudo leer ${label}`);
+    throw err;
+  }
+}
+
+/**
  * Envía un PDF a una lista de destinatarios via la sesión indicada.
- *
- * @param {string} sessionId
- * @param {string[]} recipients - Números o IDs de grupo
- * @param {string} filePath
- * @param {string} [caption]
  * @returns {Promise<{sent: number, failed: number, details: object[]}>}
  */
 export async function sendPdf(sessionId, recipients, filePath, caption = '') {
   const filename = path.basename(filePath);
-  let fileBuffer;
-  try {
-    fileBuffer = await fse.readFile(filePath);
-  } catch (err) {
-    logger.error({ filePath, err: err.message }, 'No se pudo leer el PDF');
-    throw err;
-  }
-
-  const results = { sent: 0, failed: 0, details: [] };
-
-  return enqueue(async () => {
-    for (const recipient of recipients) {
-      if (checkPause()) {
-        results.failed += recipients.length - results.sent - results.failed;
-        results.details.push({ recipient, ok: false, error: 'Envío pausado por protección anti-ban' });
-        break;
-      }
-      const jid = resolveJid(recipient);
-      try {
-        await sendDocumentVia(sessionId, jid, fileBuffer, filename, caption);
-        results.sent++;
-        results.details.push({ recipient, jid, ok: true });
-        recordSuccess();
-        await humanDelay();
-      } catch (err) {
-        results.failed++;
-        results.details.push({ recipient, jid, ok: false, error: err.message });
-        logger.error({ sessionId, jid, err: err.message }, 'Error al enviar PDF');
-        recordFail();
-      }
-    }
-    logger.info(
-      { sessionId, sent: results.sent, failed: results.failed },
-      `Envío completado: ${results.sent} exitosos, ${results.failed} fallidos`
-    );
-    return results;
-  });
+  const buffer = await readFileOrThrow(filePath, 'el PDF');
+  return sendToAll(sessionId, recipients, (jid) => sendDocumentVia(sessionId, jid, buffer, filename, caption), 'PDF');
 }
 
 /**
  * Envía un mensaje de texto a una lista de destinatarios via la sesión indicada.
- *
- * @param {string} sessionId
- * @param {string[]} recipients
- * @param {string} text
- * @returns {Promise<{sent: number, failed: number, details: object[]}>}
  */
 export async function sendText(sessionId, recipients, text) {
-  const results = { sent: 0, failed: 0, details: [] };
-
-  return enqueue(async () => {
-    for (const recipient of recipients) {
-      if (checkPause()) {
-        results.failed += recipients.length - results.sent - results.failed;
-        results.details.push({ recipient, ok: false, error: 'Envío pausado por protección anti-ban' });
-        break;
-      }
-      const jid = resolveJid(recipient);
-      try {
-        await sendTextVia(sessionId, jid, text);
-        results.sent++;
-        results.details.push({ recipient, jid, ok: true });
-        recordSuccess();
-        await humanDelay();
-      } catch (err) {
-        results.failed++;
-        results.details.push({ recipient, jid, ok: false, error: err.message });
-        logger.error({ sessionId, jid, err: err.message }, 'Error al enviar texto');
-        recordFail();
-      }
-    }
-    logger.info({ sessionId, sent: results.sent, failed: results.failed }, 'Envío de texto completado');
-    return results;
-  });
+  return sendToAll(sessionId, recipients, (jid) => sendTextVia(sessionId, jid, text), 'texto');
 }
 
 /**
  * Envía una imagen a una lista de destinatarios via la sesión indicada.
- *
- * @param {string} sessionId
- * @param {string[]} recipients
- * @param {string} filePath
- * @param {string} mimetype
- * @param {string} [caption]
- * @returns {Promise<{sent: number, failed: number, details: object[]}>}
  */
 export async function sendImage(sessionId, recipients, filePath, mimetype, caption = '') {
-  let fileBuffer;
-  try {
-    fileBuffer = await fse.readFile(filePath);
-  } catch (err) {
-    logger.error({ filePath, err: err.message }, 'No se pudo leer la imagen');
-    throw err;
-  }
+  const buffer = await readFileOrThrow(filePath, 'la imagen');
+  return sendToAll(sessionId, recipients, (jid) => sendImageVia(sessionId, jid, buffer, mimetype, caption), 'imagen');
+}
 
-  const results = { sent: 0, failed: 0, details: [] };
+/**
+ * Envía un mensaje con varios archivos (o solo texto) a cada destinatario.
+ * El texto va como pie del primer archivo; si no hay archivos, se envía como mensaje.
+ *
+ * @param {{buffer: Buffer, filename: string, mimetype: string}[]} files
+ */
+export async function sendFiles(sessionId, recipients, files, text = '') {
+  if (!files.length && !text.trim()) throw new Error('No hay nada que enviar: ni archivos ni mensaje');
 
-  return enqueue(async () => {
-    for (const recipient of recipients) {
-      if (checkPause()) {
-        results.failed += recipients.length - results.sent - results.failed;
-        results.details.push({ recipient, ok: false, error: 'Envío pausado por protección anti-ban' });
-        break;
-      }
-      const jid = resolveJid(recipient);
-      try {
-        await sendImageVia(sessionId, jid, fileBuffer, mimetype, caption);
-        results.sent++;
-        results.details.push({ recipient, jid, ok: true });
-        recordSuccess();
-        await humanDelay();
-      } catch (err) {
-        results.failed++;
-        results.details.push({ recipient, jid, ok: false, error: err.message });
-        logger.error({ sessionId, jid, err: err.message }, 'Error al enviar imagen');
-        recordFail();
-      }
+  return sendToAll(sessionId, recipients, async (jid) => {
+    if (!files.length) return sendTextVia(sessionId, jid, text);
+    for (const [i, f] of files.entries()) {
+      const caption = i === 0 ? text : '';
+      if (IMAGE_MIMETYPES.has(f.mimetype)) await sendImageVia(sessionId, jid, f.buffer, f.mimetype, caption);
+      else await sendDocumentVia(sessionId, jid, f.buffer, f.filename, caption, f.mimetype);
+      if (i < files.length - 1) await humanDelay(2000, 4000);
     }
-    logger.info(
-      { sessionId, sent: results.sent, failed: results.failed },
-      `Envío completado: ${results.sent} exitosos, ${results.failed} fallidos`
-    );
-    return results;
-  });
+  }, 'reporte');
 }

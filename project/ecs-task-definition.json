@@ -30,7 +30,9 @@
         { "name": "WHATSAPP_NUMBERS", "value": "" },
         { "name": "WHATSAPP_GROUPS", "value": "" },
         { "name": "WHATSAPP_CAPTION", "value": "📊 Reporte Power BI actualizado" },
-        { "name": "POLLING_INTERVAL_SECONDS", "value": "60" }
+        { "name": "POLLING_INTERVAL_SECONDS", "value": "60" },
+        { "name": "DATA_DIR", "value": "/app/auth/_panel" },
+        { "name": "TZ_REPORTES", "value": "America/Lima" }
       ],
       "secrets": [
         {
@@ -40,6 +42,18 @@
         {
           "name": "IMAP_PASS",
           "valueFrom": "arn:aws:secretsmanager:<REGION>:<AWS_ACCOUNT_ID>:secret:bot-wsp/imap-XXXXXX:IMAP_PASS::"
+        },
+        {
+          "name": "ADMIN_PASSWORD",
+          "valueFrom": "arn:aws:secretsmanager:<REGION>:<AWS_ACCOUNT_ID>:secret:bot-wsp/panel-XXXXXX:ADMIN_PASSWORD::"
+        },
+        {
+          "name": "SESSION_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:<REGION>:<AWS_ACCOUNT_ID>:secret:bot-wsp/panel-XXXXXX:SESSION_SECRET::"
+        },
+        {
+          "name": "API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:<REGION>:<AWS_ACCOUNT_ID>:secret:bot-wsp/panel-XXXXXX:API_KEY::"
         }
       ],
       "mountPoints": [

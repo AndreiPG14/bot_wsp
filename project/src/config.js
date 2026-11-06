@@ -74,11 +74,27 @@ const config = {
   // --- Polling de respaldo ---
   pollingIntervalSeconds: parseInt(env('POLLING_INTERVAL_SECONDS', '60'), 10),
 
+  // --- Panel web y programaciones ---
+  panel: {
+    user: env('ADMIN_USER', 'admin'),
+    password: env('ADMIN_PASSWORD', ''),
+    // Si no se define, se genera al arrancar (las sesiones del panel se cierran al reiniciar).
+    sessionSecret: env('SESSION_SECRET', ''),
+    sessionHours: parseInt(env('SESSION_HOURS', '12'), 10),
+  },
+  // Clave para POST /send, /send-image, /send-text y /sessions. Vacía = sin clave (modo antiguo).
+  apiKey: env('API_KEY', ''),
+  timezone: env('TZ_REPORTES', 'America/Lima'),
+  historyLimit: parseInt(env('HISTORY_LIMIT', '1000'), 10),
+
   // --- Rutas ---
   paths: {
-    auth: path.join(ROOT, 'auth'),
+    auth: path.resolve(env('AUTH_DIR', path.join(ROOT, 'auth'))),
+    // En ECS conviene apuntarlo dentro del volumen EFS, p. ej. /app/auth/_panel
+    data: path.resolve(env('DATA_DIR', path.join(ROOT, 'data'))),
     attachments: path.join(ROOT, 'attachments'),
     processed: path.join(ROOT, 'processed'),
+    public: path.join(ROOT, 'public'),
   },
 };
 

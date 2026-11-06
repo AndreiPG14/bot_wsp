@@ -14,6 +14,8 @@ import config from './config.js';
 import logger from './logger.js';
 import { loadExistingSessions } from './baileys.js';
 import { startServer } from './server.js';
+import { initStore } from './store.js';
+import { startScheduler } from './scheduler.js';
 
 async function main() {
   logger.info('🚀 Iniciando PowerBI → WhatsApp Bot...');
@@ -24,7 +26,9 @@ async function main() {
   await fse.ensureDir(config.paths.processed);
   logger.info('Carpetas verificadas/creadas');
 
+  await initStore();
   await startServer();
+  startScheduler();
 
   loadExistingSessions().catch((err) => {
     logger.error({ err: err.message }, 'Error al cargar sesiones existentes');

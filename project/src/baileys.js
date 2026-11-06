@@ -28,12 +28,23 @@ const baileysLogger = pino({ level: 'silent' });
  */
 const sessions = new Map();
 
+// Solo letras, números, guion y guion bajo. Evita rutas como ".." que borrarían fuera de auth/.
+const SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$/;
+export const isValidSessionId = (id) => typeof id === 'string' && SESSION_ID.test(id);
+
 function authPath(sessionId) {
+  if (!isValidSessionId(sessionId)) throw new Error(`Nombre de sesión no válido: ${sessionId}`);
   return path.join(config.paths.auth, sessionId);
 }
 
 export function getSession(sessionId) {
   return sessions.get(sessionId) || null;
+}
+
+/** Número vinculado a la sesión, sin el sufijo de dispositivo. */
+function sessionPhone(s) {
+  const raw = s.sock?.user?.id;
+  return raw ? raw.split(':')[0].split('@')[0] : null;
 }
 
 export function listSessions() {
@@ -42,7 +53,13 @@ export function listSessions() {
     connected: s.isConnected,
     hasQr: !!s.qrDataUrl,
     reconnectAttempts: s.reconnectAttempts,
+    phone: s.isConnected ? sessionPhone(s) : null,
+    name: s.isConnected ? s.sock?.user?.name || null : null,
   }));
+}
+
+export function getSessionQr(sessionId) {
+  return sessions.get(sessionId)?.qrDataUrl || null;
 }
 
 export function getFirstConnectedSession() {
@@ -57,6 +74,7 @@ export function getFirstConnectedSession() {
  * @param {string} sessionId
  */
 export async function createSession(sessionId) {
+  if (!isValidSessionId(sessionId)) throw new Error(`Nombre de sesión no válido: ${sessionId}`);
   if (sessions.has(sessionId)) return sessions.get(sessionId);
 
   const s = {
@@ -76,6 +94,8 @@ export async function createSession(sessionId) {
  * @param {string} sessionId
  */
 export async function deleteSession(sessionId) {
+  if (!isValidSessionId(sessionId)) throw new Error(`Nombre de sesión no válido: ${sessionId}`);
+  groupCache.delete(sessionId);
   const s = sessions.get(sessionId);
   if (s) {
     try { s.sock?.end(); } catch {}
@@ -91,7 +111,8 @@ export async function deleteSession(sessionId) {
 export async function loadExistingSessions() {
   await fse.ensureDir(config.paths.auth);
   const entries = await fse.readdir(config.paths.auth, { withFileTypes: true });
-  const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+  // Carpetas que no son sesiones (p. ej. _panel con los datos del panel) se ignoran.
+  const dirs = entries.filter((e) => e.isDirectory() && isValidSessionId(e.name)).map((e) => e.name);
 
   if (dirs.length === 0) {
     logger.info('No hay sesiones previas. Creá una en GET /sessions/:id/qr');
@@ -213,13 +234,13 @@ async function handleReconnect(sessionId) {
 
 // ─── Envío ───────────────────────────────────────────────────────────────────
 
-export async function sendDocumentVia(sessionId, jid, fileBuffer, filename, caption) {
+export async function sendDocumentVia(sessionId, jid, fileBuffer, filename, caption, mimetype = 'application/pdf') {
   const s = sessions.get(sessionId);
   if (!s?.isConnected) throw new Error(`Sesión "${sessionId}" no está conectada`);
   logger.info({ sessionId, jid, filename }, 'Enviando documento');
   const result = await s.sock.sendMessage(jid, {
     document: fileBuffer,
-    mimetype: 'application/pdf',
+    mimetype,
     fileName: filename,
     caption,
   });
@@ -242,16 +263,23 @@ export async function sendTextVia(sessionId, jid, text) {
   logger.info({ sessionId, jid, msgId: result?.key?.id, status: result?.status }, '✅ Texto enviado');
 }
 
-export async function listGroupsVia(sessionId) {
+// groupFetchAllParticipating es pesado y WhatsApp lo limita: se guarda 5 minutos.
+const groupCache = new Map();
+const GROUP_TTL = 5 * 60e3;
+
+export async function listGroupsVia(sessionId, { fresh = false } = {}) {
   const s = sessions.get(sessionId);
   if (!s?.isConnected) {
     logger.warn({ sessionId }, 'No conectado. No se pueden listar grupos.');
     return [];
   }
+  const cached = groupCache.get(sessionId);
+  if (!fresh && cached && Date.now() - cached.at < GROUP_TTL) return cached.groups;
+
   const groups = await s.sock.groupFetchAllParticipating();
-  return Object.values(groups).map((g) => ({
-    id: g.id,
-    name: g.subject,
-    participants: g.participants?.length || 0,
-  }));
+  const list = Object.values(groups)
+    .map((g) => ({ id: g.id, name: g.subject || g.id, participants: g.participants?.length || 0 }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'es'));
+  groupCache.set(sessionId, { at: Date.now(), groups: list });
+  return list;
 }

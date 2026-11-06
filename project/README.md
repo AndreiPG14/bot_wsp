@@ -68,6 +68,61 @@ EMAIL_FROM_FILTER=powerautomate@empresa.com
 
 ---
 
+## Panel web y programación de envíos
+
+Abre `http://<servidor>:3000/` e inicia sesión. El panel tiene cuatro secciones:
+
+| Sección | Para qué |
+|---|---|
+| **Panel** | Enviados hoy, programaciones activas, sesiones, % entregado en 7 días, próximos y últimos envíos |
+| **Programaciones** | Crear, editar, pausar, enviar ahora o borrar envíos automáticos |
+| **Envíos** | Historial de todo lo que salió (programado, manual, webhook o por `/send`), con detalle por destinatario |
+| **Sesiones** | Vincular números con el QR dentro del panel, ver grupos y copiar sus IDs |
+
+Cada programación define:
+
+- **Cuándo**: diario, lunes a viernes, días de la semana, cada X horas dentro de un horario, mensual, cron libre o **webhook** (lo dispara otro sistema).
+- **De dónde sale el reporte**:
+  - **URL / API**: cualquier endpoint GET o POST, con cabeceras (tokens). Si devuelve PDF, imagen, Excel o CSV se envía como archivo; si devuelve texto o JSON, va en el mensaje. La URL acepta variables, p. ej. `?fecha={fecha_iso}`.
+  - **Correo**: el último correo que coincida con asunto y remitente; envía sus adjuntos. Con "solo correos nuevos" no reenvía el mismo.
+  - **Archivo**: un archivo subido desde el panel (hasta 30 MB).
+  - **Solo mensaje**: recordatorios o avisos.
+- **Mensaje** con variables: `{fecha}` `{fecha_iso}` `{ayer_iso}` `{hora}` `{dia}` `{semana}` `{mes}` `{anio}` `{nombre}`.
+- **Destinatarios**: grupos elegidos de la lista de la sesión y/o números.
+
+El botón **Probar origen** descarga el reporte y muestra qué se enviaría, sin enviar nada.
+
+### Webhook
+
+Una programación de tipo webhook tiene su propia URL secreta (`POST /hooks/<token>`), visible en su tarjeta:
+
+```bash
+# Envía el archivo que llega en el cuerpo
+curl -X POST --data-binary @reporte.pdf -H "Content-Type: application/pdf" "https://<servidor>/hooks/<token>?filename=Reporte.pdf"
+
+# JSON (igual que /send)
+curl -X POST -H "Content-Type: application/json" -d '{"fileContent":"<base64>","filename":"Reporte.pdf","text":"Listo"}' https://<servidor>/hooks/<token>
+
+# Cuerpo vacío: usa el origen configurado (URL, correo, archivo…)
+curl -X POST https://<servidor>/hooks/<token>
+```
+
+### Variables nuevas
+
+| Variable | Uso |
+|---|---|
+| `ADMIN_USER` / `ADMIN_PASSWORD` | Acceso al panel. Sin `ADMIN_PASSWORD` el panel no deja entrar. |
+| `SESSION_SECRET` | Firma la cookie del panel. Si falta, se genera al arrancar y hay que volver a iniciar sesión tras cada reinicio. |
+| `API_KEY` | Si se define, `/send`, `/send-image` y `/send-text` exigen la cabecera `x-api-key`. Vacía = como antes (abiertos). |
+| `DATA_DIR` | Dónde se guardan programaciones, historial y archivos subidos. En ECS: `/app/auth/_panel` (dentro del volumen EFS). |
+| `AUTH_DIR` | Carpeta de sesiones de WhatsApp (por defecto `auth/`). |
+| `TZ_REPORTES` | Zona horaria de las programaciones (por defecto `America/Lima`). |
+| `HISTORY_LIMIT` | Envíos que guarda el historial (por defecto 1000). |
+
+> 🔒 Las rutas `/sessions*` y `/check-numbers` ahora piden sesión del panel o la API key. Antes cualquiera con la URL podía borrar sesiones.
+
+---
+
 ## Primer inicio y escaneo de QR
 
 Al iniciar por primera vez, el bot mostrará un código QR en la consola.

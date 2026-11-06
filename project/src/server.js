@@ -8,9 +8,15 @@
  *   DELETE /sessions/:id            → elimina una sesión y borra sus credenciales
  *   GET  /sessions/:id/groups       → lista los grupos de una sesión
  *
- * Envío:
+ * Envío (API key si API_KEY está definido):
  *   POST /send                      → envía PDF
  *   POST /send-image                → envía imagen
+ *   POST /send-text                 → envía texto
+ *   POST /hooks/:token              → dispara una programación de tipo webhook
+ *
+ * Panel:
+ *   GET  /                          → panel web (public/)
+ *   /api/*                          → API del panel (ver panelApi.js)
  *
  * Otros:
  *   GET  /health                    → estado general del bot
@@ -28,108 +34,81 @@ import {
   listSessions,
   getFirstConnectedSession,
   listGroupsVia,
+  isValidSessionId,
 } from './baileys.js';
 import { sendPdf, sendImage, sendText, IMAGE_MIMETYPES } from './sendWhatsapp.js';
 import { generateSafeFilename, removeFile } from './utils.js';
+import { requireApiKey, requirePanelOrKey } from './auth.js';
+import panelApi from './panelApi.js';
+import { isRunning, runSchedule, trackApiSend } from './scheduler.js';
+import { getScheduleByToken } from './store.js';
+import { MAX_BYTES } from './sources.js';
 
 const app = express();
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  next();
+});
 app.use(express.json({ limit: '50mb' }));
 
-// ─── GET / (panel web) ───────────────────────────────────────────────────────
+// ─── Panel web ────────────────────────────────────────────────────────────────
 
-app.get('/', (req, res) => {
-  res.send(`<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>WhatsApp Bot — Sesiones</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: sans-serif; background: #f0f2f5; min-height: 100vh; padding: 32px 16px; }
-    h1 { color: #128C7E; margin-bottom: 24px; }
-    .card { background: white; border-radius: 12px; padding: 24px; margin-bottom: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
-    .sessions { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin-bottom: 24px; }
-    .session { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.1); position: relative; }
-    .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
-    .badge.ok  { background: #dcfce7; color: #166534; }
-    .badge.qr  { background: #fef9c3; color: #854d0e; }
-    .badge.off { background: #fee2e2; color: #991b1b; }
-    .session h3 { margin-bottom: 8px; font-size: 16px; }
-    .btn { display: inline-block; padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; font-size: 14px; font-weight: 600; text-decoration: none; }
-    .btn-green  { background: #25D366; color: white; }
-    .btn-red    { background: #ef4444; color: white; margin-left: 8px; }
-    .btn-gray   { background: #e5e7eb; color: #374151; }
-    input { width: 100%; padding: 10px 14px; border: 1.5px solid #d1d5db; border-radius: 8px; font-size: 15px; margin-bottom: 12px; outline: none; }
-    input:focus { border-color: #25D366; }
-    .row { display: flex; gap: 8px; align-items: center; }
-    #msg { margin-top: 12px; font-size: 14px; color: #6b7280; }
-    .empty { color: #9ca3af; font-size: 14px; }
-  </style>
-</head>
-<body>
-  <h1>📱 WhatsApp Bot — Sesiones</h1>
+app.use('/api', panelApi);
+app.use(express.static(config.paths.public, {
+  index: 'index.html',
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Content-Security-Policy',
+      "default-src 'self'; img-src 'self' data:; style-src 'self'; frame-ancestors 'none'");
+  },
+}));
 
-  <div class="card">
-    <h2 style="margin-bottom:16px;font-size:16px;color:#374151;">Nueva sesión</h2>
-    <div class="row">
-      <input id="newId" placeholder='Nombre de sesión (ej: andrei, empresa)' style="margin:0"/>
-      <button class="btn btn-green" onclick="crearSesion()">Generar QR</button>
-    </div>
-    <div id="msg"></div>
-  </div>
+// ─── POST /hooks/:token ───────────────────────────────────────────────────────
+//
+// Dispara una programación de tipo "webhook". Acepta:
+//   - Cuerpo vacío                      → usa el origen configurado (URL, correo, archivo…)
+//   - JSON { fileContent (base64), filename, text }
+//   - El archivo directo en el cuerpo   (Content-Type: application/pdf, image/png, …)
+//     con ?filename=reporte.pdf opcional
 
-  <div id="sessions" class="sessions"></div>
+app.post('/hooks/:token', express.raw({ type: (req) => !req.is('application/json'), limit: MAX_BYTES }), async (req, res) => {
+  const s = getScheduleByToken(req.params.token);
+  if (!s) return res.status(404).json({ error: 'Webhook no encontrado' });
+  if (!s.enabled) return res.status(409).json({ error: 'La programación está pausada' });
+  if (isRunning(s.id)) return res.status(409).json({ error: 'Ya se está enviando' });
 
-  <script>
-    async function cargar() {
-      const r = await fetch('/sessions');
-      const { sessions } = await r.json();
-      const el = document.getElementById('sessions');
-      if (!sessions.length) {
-        el.innerHTML = '<p class="empty">No hay sesiones aún. Creá una arriba.</p>';
-        return;
-      }
-      el.innerHTML = sessions.map(s => {
-        const badge = s.connected ? '<span class="badge ok">✅ Conectado</span>'
-                    : s.hasQr    ? '<span class="badge qr">⚡ Esperando QR</span>'
-                    :              '<span class="badge off">⭕ Desconectado</span>';
-        const qrBtn = !s.connected
-          ? \`<a class="btn btn-green" href="/sessions/\${s.id}/qr" target="_blank">Ver QR</a>\`
-          : \`<a class="btn btn-gray" href="/sessions/\${s.id}/groups" target="_blank">Ver grupos</a>\`;
-        return \`<div class="session">
-          <h3>\${s.id}</h3>
-          \${badge}
-          <div style="margin-top:14px">
-            \${qrBtn}
-            <button class="btn btn-red" onclick="eliminar('\${s.id}')">Eliminar</button>
-          </div>
-        </div>\`;
-      }).join('');
+  let payload;
+  const ctype = String(req.headers['content-type'] || '').split(';')[0];
+  if (Buffer.isBuffer(req.body) && req.body.length) {
+    const filename = String(req.query.filename || `reporte.${ctype.split('/')[1] || 'bin'}`).replace(/[\\/:*?"<>|]/g, '_');
+    payload = { files: [{ buffer: req.body, filename, mimetype: ctype || 'application/octet-stream' }], text: '' };
+  } else if (req.body && (req.body.fileContent || req.body.text)) {
+    const files = [];
+    if (req.body.fileContent) {
+      const filename = String(req.body.filename || 'reporte.pdf').replace(/[\\/:*?"<>|]/g, '_');
+      const ext = filename.split('.').pop().toLowerCase();
+      const map = { pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', csv: 'text/csv' };
+      files.push({ buffer: Buffer.from(req.body.fileContent, 'base64'), filename, mimetype: req.body.mimetype || map[ext] || 'application/octet-stream' });
     }
+    payload = { files, text: String(req.body.text || '').slice(0, 3000) };
+  }
 
-    async function crearSesion() {
-      const id = document.getElementById('newId').value.trim().replace(/[^a-zA-Z0-9_-]/g, '-');
-      if (!id) { document.getElementById('msg').textContent = 'Ingresá un nombre.'; return; }
-      document.getElementById('msg').textContent = 'Creando sesión...';
-      window.open('/sessions/' + id + '/qr', '_blank');
-      document.getElementById('newId').value = '';
-      document.getElementById('msg').textContent = 'Escaneá el QR que se abrió en la nueva pestaña.';
-      setTimeout(cargar, 2000);
-    }
-
-    async function eliminar(id) {
-      if (!confirm('¿Eliminar la sesión "' + id + '"?')) return;
-      await fetch('/sessions/' + id, { method: 'DELETE' });
-      cargar();
-    }
-
-    cargar();
-    setInterval(cargar, 5000);
-  </script>
-</body>
-</html>`);
+  runSchedule(s.id, { origin: 'webhook', payload }).catch((err) => logger.error({ err: err.message }, 'Error en webhook'));
+  res.status(202).json({ ok: true, message: `Envío "${s.name}" en proceso` });
 });
+
+// ─── Rutas antiguas de sesiones (panel o API key) ─────────────────────────────
+
+app.use('/sessions/:id', (req, res, next) => {
+  if (!isValidSessionId(req.params.id)) return res.status(400).json({ error: 'Nombre de sesión no válido' });
+  next();
+});
+app.use(['/sessions', '/check-numbers'], requirePanelOrKey);
+app.use(['/send', '/send-image', '/send-text'], requireApiKey);
 
 // ─── GET /sessions ────────────────────────────────────────────────────────────
 
@@ -233,7 +212,10 @@ app.post('/send', async (req, res) => {
       filePath = path.join(config.paths.attachments, safeName);
       await fse.ensureDir(config.paths.attachments);
       await fse.writeFile(filePath, buffer);
-      await sendPdf(sessionId, recipients, filePath, caption);
+      await trackApiSend(
+        { name: caption || filename || 'PDF por API', session: sessionId, recipients, files: [filename || 'reporte.pdf'] },
+        sendPdf(sessionId, recipients, filePath, caption)
+      );
     } catch (err) {
       logger.error({ err: err.message }, 'Error al procesar /send');
     } finally {
@@ -287,7 +269,9 @@ app.post('/send-image', async (req, res) => {
   // Procesar en background
   (async () => {
     if (!fileContent) {
-      try { await sendText(sessionId, recipients, caption); } catch (err) {
+      try {
+        await trackApiSend({ name: 'Mensaje por API', session: sessionId, recipients, files: [] }, sendText(sessionId, recipients, caption));
+      } catch (err) {
         logger.error({ err: err.message }, 'Error al enviar texto en /send-image');
       }
       return;
@@ -300,7 +284,10 @@ app.post('/send-image', async (req, res) => {
       filePath = path.join(config.paths.attachments, safeName);
       await fse.ensureDir(config.paths.attachments);
       await fse.writeFile(filePath, buffer);
-      await sendImage(sessionId, recipients, filePath, mimetype, caption);
+      await trackApiSend(
+        { name: caption || filename || 'Imagen por API', session: sessionId, recipients, files: [filename || 'imagen'] },
+        sendImage(sessionId, recipients, filePath, mimetype, caption)
+      );
     } catch (err) {
       logger.error({ err: err.message }, 'Error al procesar /send-image');
     } finally {
@@ -340,7 +327,7 @@ app.post('/send-text', async (req, res) => {
 
   (async () => {
     try {
-      await sendText(sessionId, recipients, text);
+      await trackApiSend({ name: 'Mensaje por API', session: sessionId, recipients, files: [] }, sendText(sessionId, recipients, text));
     } catch (err) {
       logger.error({ err: err.message }, 'Error al procesar /send-text');
     }
